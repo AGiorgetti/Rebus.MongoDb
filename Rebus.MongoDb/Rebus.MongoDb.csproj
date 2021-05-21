@@ -39,13 +39,13 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Remove="Properties\AssemblyInfo.cs" />
-    <None Include="icon.png" Pack="true" PackagePath=""/>
+    <None Include="icon.png" Pack="true" PackagePath="" />
     <None Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="mongodb.driver" Version="2.10.4" />
-    <PackageReference Include="MongoDB.Driver.GridFS" Version="2.10.4" />
-    <PackageReference Include="rebus" Version="6.3.1" />
+    <PackageReference Include="mongodb.driver" Version="2.12.3" />
+    <PackageReference Include="MongoDB.Driver.GridFS" Version="2.12.3" />
+    <PackageReference Include="rebus" Version="6.5.5" />
   </ItemGroup>
   <ItemGroup>
     <Resource Include="icon.png">
