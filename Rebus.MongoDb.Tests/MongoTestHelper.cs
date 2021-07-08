@@ -15,7 +15,9 @@ namespace Rebus.MongoDb.Tests
 
             var databaseName = $"rebus2_test_{suffix}".TrimEnd('_');
 
-            var mongoUrl = new MongoUrl($"mongodb://localhost/{databaseName}");
+            var builder = new MongoUrlBuilder(Environment.GetEnvironmentVariable("REBUS_MONGODB"));
+            builder.DatabaseName = databaseName;
+            var mongoUrl = builder.ToMongoUrl();
 
             Console.WriteLine("Using MongoDB {0}", mongoUrl);
 
@@ -26,14 +28,17 @@ namespace Rebus.MongoDb.Tests
         {
             get
             {
-                #if NET45
-                return "net45";
-                #elif NET46
-                return "net46";
+                #if NET461
+                return "net461";
                 #elif NETCOREAPP21
                 return "netcoreapp21";
                 #endif
             }
+        }
+
+        internal static void DropCollection(string collectionName)
+        {
+            GetMongoDatabase().DropCollection(collectionName);
         }
 
         public static IMongoDatabase GetMongoDatabase()
@@ -54,17 +59,14 @@ namespace Rebus.MongoDb.Tests
                 GuidRepresentation = GuidRepresentation.Standard,
                 WriteConcern = WriteConcern.Acknowledged
             };
-            var mongoDatabase = mongoClient.GetDatabase(url.DatabaseName, settings);
-            return mongoDatabase;
+            return mongoClient.GetDatabase(url.DatabaseName, settings);
         }
 
         static IMongoClient GetMongoClient()
         {
             var url = GetUrl();
 
-            var mongoClient = new MongoClient(url);
-
-            return mongoClient;
+            return new MongoClient(url);
         }
     }
 }
