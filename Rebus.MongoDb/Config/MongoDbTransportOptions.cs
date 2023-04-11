@@ -55,5 +55,18 @@ namespace Rebus.Config
         /// If <c>true</c> the transport is configured in one way mode
         /// </summary>
         public bool IsOneWayQueue => InputQueueName == null;
+
+        /// <summary>
+        /// If true and database supports change streams, instead of polling for new message the client
+        /// will create a change stream to know when a new message is available. Check also 
+        /// <see cref="MaxWaitInMillisecondsWhenChangeStreamIsEnabled"/>.
+        /// </summary>
+        public bool UseChangeStream { get; set; }
+
+        /// <summary>
+        /// If <see cref="UseChangeStream"/> is true, database is not polled, but to avoid the risk of
+        /// missing a message, we do not trust change stream if more than this amount of time has passed
+        /// </summary>
+        public int MaxWaitInMillisecondsWhenChangeStreamIsEnabled { get; set; } = 20000;
     }
 }

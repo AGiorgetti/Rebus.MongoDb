@@ -31,7 +31,7 @@ namespace Rebus.MongoDb.Transport
     /// support transaction.
     /// </para>
     /// </summary>
-    public class MongoDbTransport : ITransport, IInitializable
+    public class MongoDbTransport : ITransport, IInitializable, IDisposable
     {
         /// <summary>
         /// When a message is sent to this address, it will be deferred into the future!
@@ -66,6 +66,30 @@ namespace Rebus.MongoDb.Transport
 
         private readonly IMongoDatabase _database;
 
+        private readonly bool _supportChangeTracking = false;
+
+        /// <summary>
+        /// When change tracking is enabled we avoid polling datatbase for new messages
+        /// until change tracking tells me that there is a new message, or until too much
+        /// time passed.
+        /// </summary>
+        private DateTime _lastTimePoll = DateTime.MinValue;
+
+        /// <summary>
+        /// Basically we avoid polling if this is false and we have polled database recently.
+        /// Default value is true, this is used only if change tracking is enabled.
+        /// </summary>
+        private bool _messageIsAvailable = true;
+
+        /// <summary>
+        /// Tells if the change tracking is enabled.
+        /// </summary>
+        private bool _changeTrackingEnabled = false;
+
+        private CancellationTokenSource _source;
+
+        private readonly CancellationToken _token;
+
         /// <summary>
         /// This is the collection that points to _receiveCollectionNAme and it is the 
         /// collection that will receive messages.
@@ -87,6 +111,8 @@ namespace Rebus.MongoDb.Transport
                 throw new ArgumentNullException(nameof(rebusLoggerFactory));
             }
 
+            _source = new CancellationTokenSource();
+            _token = _source.Token;
             _log = rebusLoggerFactory.GetLogger<MongoDbTransport>();
 
             try
@@ -97,6 +123,8 @@ namespace Rebus.MongoDb.Transport
                 }
 
                 var client = new MongoClient(mongoDbTransportOptions.ConnectionString);
+                _supportChangeTracking = MongoDbHelpers.SupportsChangeStreams(client);
+
                 _database = client.GetDatabase(mongoDbTransportOptions.ConnectionString.DatabaseName);
 
                 _rebusTime = rebusTime ?? throw new ArgumentNullException(nameof(rebusTime));
@@ -125,6 +153,21 @@ namespace Rebus.MongoDb.Transport
             if (!_mongoDbTransportOptions.IsOneWayQueue)
             {
                 _collectionQueue = _database.GetCollection<TransportMessageMongoDb>(Address);
+
+                if (_mongoDbTransportOptions.UseChangeStream)
+                {
+                    if (!_supportChangeTracking)
+                    {
+                        _log.Warn("Unable to set change tracking because the server does not support it.");
+                    }
+                    else if (_mongoDbTransportOptions.UseChangeStream)
+                    {
+                        //everything is ok, change traking is supported and we can use it.
+                        //fire and forget, let the task run in the background.
+                        Task.Run(() => ChangeStreamFunction(_collectionQueue));
+                        _changeTrackingEnabled = true;
+                    }
+                }
             }
         }
 
@@ -157,6 +200,31 @@ namespace Rebus.MongoDb.Transport
         public void EnsureCollectionIsCreated()
         {
             AsyncHelpers.RunSync(() => InnerEnsureTableIsCreatedAsync(_mongoDbTransportOptions.InputQueueName));
+        }
+
+        private async Task ChangeStreamFunction(IMongoCollection<TransportMessageMongoDb> collection)
+        {
+            while (!_token.IsCancellationRequested)
+            {
+                try
+                {
+                    var options = new ChangeStreamOptions { FullDocument = ChangeStreamFullDocumentOption.UpdateLookup };
+                    var cursor = await collection.WatchAsync(options, _token);
+
+                    using (cursor)
+                    {
+                        await cursor.ForEachAsync(_ =>
+                        {
+                            _messageIsAvailable = true;
+                            return Task.CompletedTask;
+                        }, _token);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _log.Error(ex, "Rebus MongodbTransport: Error in change stream helper for collection {0}", collection);
+                }
+            }
         }
 
         private async Task InnerEnsureTableIsCreatedAsync(string queueName)
@@ -247,7 +315,7 @@ namespace Rebus.MongoDb.Transport
                 var message = await ReceiveInternal(context, cancellationToken).ConfigureAwait(false);
                 if (message != null && context != null)
                 {
-                    context.OnAborted(c => _collectionQueue.InsertOne(message));
+                    context.OnAborted(_ => _collectionQueue.InsertOne(message));
                 }
 
                 return ExtractTransportMessageFromReader(message);
@@ -255,7 +323,7 @@ namespace Rebus.MongoDb.Transport
         }
 
         /// <summary>
-        /// Handle retrieving a message from the queue, decoding it, and performing any 
+        /// Handle retrieving a message from the queue, decoding it, and performing any
         /// transaction maintenance.
         /// </summary>
         /// <param name="context">Tranasction context the receive is operating on</param>
@@ -266,6 +334,17 @@ namespace Rebus.MongoDb.Transport
             if (_mongoDbTransportOptions.IsOneWayQueue)
             {
                 return null;
+            }
+
+            if (_changeTrackingEnabled)
+            {
+                //if change trakcking is enabled and we do not have new messages, and not enough time passed, just return null;
+                if (!_messageIsAvailable
+                    && DateTime.UtcNow.Subtract(_lastTimePoll).TotalMilliseconds < _mongoDbTransportOptions.MaxWaitInMillisecondsWhenChangeStreamIsEnabled)
+                {
+                    //ok change tracking signals no new message, and we are still in the time window.
+                    return null;
+                }
             }
 
             TransportMessageMongoDb receivedTransportMessage;
@@ -279,6 +358,7 @@ namespace Rebus.MongoDb.Transport
                 .Descending(t => t.Priority)
                 .Ascending(t => t.Visibile)
                 .Ascending(t => t.Id);
+
             try
             {
                 var record = await _collectionQueue.FindOneAndDeleteAsync(
@@ -287,6 +367,9 @@ namespace Rebus.MongoDb.Transport
                     {
                         Sort = sort
                     }).ConfigureAwait(false);
+                //Signal if no more message are available.
+                _messageIsAvailable = record != null;
+                _lastTimePoll = DateTime.UtcNow;
                 receivedTransportMessage = record;
             }
             catch (Exception exception) when (cancellationToken.IsCancellationRequested)
@@ -313,7 +396,6 @@ namespace Rebus.MongoDb.Transport
 
             return new TransportMessage(reader.Headers, reader.Body);
         }
-
 
         /// <summary>
         /// Gets the address a message will actually be sent to. Handles deferred messsages.
@@ -363,6 +445,7 @@ namespace Rebus.MongoDb.Transport
         }
 
         private ConcurrentDictionary<String, IMongoCollection<TransportMessageMongoDb>> _collectionCache = new ConcurrentDictionary<string, IMongoCollection<TransportMessageMongoDb>>();
+        private bool _disposedValue;
 
         private IMongoCollection<TransportMessageMongoDb> GetCollectionFromDestination(string destinationAddress)
         {
@@ -419,6 +502,34 @@ namespace Rebus.MongoDb.Transport
             {
                 throw new FormatException($"Could not parse '{valueOrNull}' into an Int32!", exception);
             }
+        }
+
+        /// <summary>
+        /// Dispose the transport.
+        /// </summary>
+        /// <param name="disposing"></param>
+        protected virtual void Dispose(bool disposing)
+        {
+            if (!_disposedValue)
+            {
+                if (disposing)
+                {
+                    _source.Cancel();
+                    _source.Dispose();
+                }
+
+                _disposedValue = true;
+            }
+        }
+
+        /// <summary>
+        /// Dispose resources.
+        /// </summary>
+        public void Dispose()
+        {
+            // Do not change this code. Put cleanup code in 'Dispose(bool disposing)' method
+            Dispose(disposing: true);
+            GC.SuppressFinalize(this);
         }
     }
 }
