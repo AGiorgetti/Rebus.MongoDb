@@ -1,5 +1,7 @@
 ﻿using System;
 using MongoDB.Bson;
+using MongoDB.Bson.Serialization;
+using MongoDB.Bson.Serialization.Serializers;
 using MongoDB.Driver;
 using Rebus.Tests.Contracts;
 
@@ -42,9 +44,10 @@ namespace Rebus.MongoDb.Tests
         static IMongoDatabase GetMongoDatabase(IMongoClient mongoClient)
         {
             var url = GetUrl();
+            BsonSerializer.RegisterSerializer(new GuidSerializer(GuidRepresentation.Standard));
+
             var settings = new MongoDatabaseSettings
             {
-                GuidRepresentation = GuidRepresentation.Standard,
                 WriteConcern = WriteConcern.Acknowledged
             };
             return mongoClient.GetDatabase(url.DatabaseName, settings);
