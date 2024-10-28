@@ -43,8 +43,8 @@
     <None Include="icon.png" Pack="true" PackagePath="" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="mongodb.driver" Version="2.28.0" />
-    <PackageReference Include="MongoDB.Driver.GridFS" Version="2.28.0" />
+    <PackageReference Include="mongodb.driver" Version="2.30.0" />
+    <PackageReference Include="MongoDB.Driver.GridFS" Version="2.30.0" />
     <PackageReference Include="rebus" Version="6.6.5" />
   </ItemGroup>
   <ItemGroup>
